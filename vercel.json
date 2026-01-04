@@ -1,8 +1,5 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "package.json", "use": "@vercel/next" }
-  ],
   "functions": {
     "pages/api/analyze.js": {
       "memory": 1024,
