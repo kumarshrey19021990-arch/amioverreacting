@@ -13,27 +13,65 @@ export default async function handler(req, res) {
   const timeoutMs = 5 * 60 * 1000
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-    // Use the user's requested prompt template and instruct the model to RETURN ONLY JSON.
-    const userPrompt = `You are a neutral, emotionally intelligent analyst.
+    
+  // Use a strict JSON-only instruction for the assistant (RETURN ONLY VALID JSON).
+      const jsonInstruction = `
+  RETURN ONLY VALID JSON. NO MARKDOWN. NO EXTRA TEXT.
 
-  Task:
-  Analyze the following situation WITHOUT validating or dismissing emotions blindly.
+  JSON SCHEMA:
+  {
+    "summary": string,             
+    // Neutral rewrite + short summary (max 800 words)
 
-  Steps:
-  1. Rewrite the situation neutrally, removing emotional language and give summary
-  2. Identify possible cognitive biases (if any).
-  3. Determine if the reaction is proportionate, mildly exaggerated, or disproportionate.
-  4. Give an "Overreaction Score" from 1 to 10.
-  5. Provide 3 calm, rational next steps.
+    "biases": [
+      {
+        "name": string,
+        "description": string      
+        // About 2 concise lines explaining the bias
+      }
+    ],
 
-  Rules:
-  - Do not shame the user.
-  - Do not take sides.
-  - Be grounded, practical, and emotionally safe.
-  - If emotions are justified, say so clearly.
+    "proportionality": string,     
+    // About 3 short lines explaining whether the reaction is proportionate,
+    // mildly exaggerated, or disproportionate
 
-  Situation:
+    "overreaction_score": number,  
+    // Integer from 1 to 10
+
+    "next_steps": [
+      {
+        "step": string,
+        "explanation": string      
+        // About 2 calm, rational lines per step
+      }
+    ]
+  }
+  `;
+
+  const userPrompt = `
+You are a neutral, emotionally intelligent analyst.
+
+Analyze the situation using the rules below.
+
+RULES:
+- Do not shame the user
+- Do not take sides
+- Be grounded and emotionally safe
+- If emotions are justified, state so briefly
+- Keep everything concise
+
+TASKS:
+1. Rewrite the situation neutrally and provide a short summary (max 800 words)
+2. Identify possible cognitive biases (if any)
+3. Judge whether the reaction is proportionate, mildly exaggerated, or disproportionate
+4. Give an overreaction score (1–10) // 10 being extreme overreaction and 1 being completely proportionate
+5. Provide exactly 3 calm, rational next steps
+
+${jsonInstruction}
+
+SITUATION:
 `;
+      // const userPrompt = jsonInstruction + "\nSituation:\n" + text + "\n";
 
   try {
     // Validate API key early to give clearer error
@@ -152,15 +190,19 @@ export default async function handler(req, res) {
     if (parsed && typeof parsed === 'object') {
       return res.status(200).json({
         summary: parsed.summary || '',
-        biases: Array.isArray(parsed.biases) ? parsed.biases : parsed.biases ? [parsed.biases] : [],
-        proportion: parsed.proportion || null,
-        score: parsed.score ?? null,
-        steps: Array.isArray(parsed.steps) ? parsed.steps : parsed.steps ? [parsed.steps] : [],
+        biases: Array.isArray(parsed.biases)
+          ? parsed.biases.map((b) => ({ name: b.name || '', description: b.description || '' }))
+          : [],
+        proportionality: parsed.proportionality || null,
+        overreaction_score: typeof parsed.overreaction_score === 'number' ? parsed.overreaction_score : (parsed.overreaction_score ? Number(parsed.overreaction_score) : null),
+        next_steps: Array.isArray(parsed.next_steps)
+          ? parsed.next_steps.map((s) => ({ step: s.step || '', explanation: s.explanation || '' }))
+          : [],
       })
     }
 
-    // fallback: return assistantText in summary and empty other fields
-    return res.status(200).json({ summary: assistantText, biases: [], proportion: null, score: null, steps: [] })
+    // fallback: return assistantText in summary and empty other fields (new schema)
+    return res.status(200).json({ summary: assistantText, biases: [], proportionality: null, overreaction_score: null, next_steps: [] })
   } catch (err) {
     if (err.name === 'AbortError') {
       return res.status(504).json({ error: 'OpenAI request timed out' })

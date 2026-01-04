@@ -1,10 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 export default function Home() {
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [showPayModal, setShowPayModal] = useState(false)
+  const [detectedRegion, setDetectedRegion] = useState('us')
+  const [paying, setPaying] = useState(false)
+  const [couponCode, setCouponCode] = useState('')
+  const [couponChecking, setCouponChecking] = useState(false)
+  const [couponValid, setCouponValid] = useState(false)
+  const [couponMessage, setCouponMessage] = useState('')
 
   async function handleAnalyze() {
     setLoading(true)
@@ -23,6 +30,189 @@ export default function Home() {
       setError(err.message || 'Error')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // When returning from PayPal Checkout, verify payment and run analysis if paid
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const token = params.get('token') || params.get('paypal_order_id') || params.get('session_id')
+      if (!token) return
+
+      // remove token from URL
+      const cleanUrl = window.location.pathname
+      window.history.replaceState({}, '', cleanUrl)
+
+      ;(async () => {
+        try {
+          const v = await fetch(`/api/verify-checkout-session?token=${encodeURIComponent(token)}`)
+          if (!v.ok) throw new Error('Verification failed')
+          const { paid } = await v.json()
+          if (paid) {
+            // restore pending text from localStorage
+            const pending = localStorage.getItem('pending_text') || ''
+            if (pending) setText(pending)
+            // clear pending text after restoring
+            localStorage.removeItem('pending_text')
+            // trigger analysis
+            handleAnalyze()
+          } else {
+            setError('Payment not completed.')
+          }
+        } catch (e) {
+          console.error('Payment verify error', e)
+          setError('Payment verification failed')
+        }
+      })()
+    } catch (e) {
+      /* ignore */
+    }
+  }, [])
+
+  // Start payment flow: show modal
+  function startPayment() {
+    setShowPayModal(true)
+  }
+
+  function priceLabelForRegion(region) {
+    if (!region) return '$1.99 — one analysis'
+    if (region === 'europe') return '€1.99 — one analysis'
+    if (region === 'uk') return '£1.66 — one analysis'
+    if (region === 'india') return '₹99 — one analysis'
+    return '$1.99 — one analysis'
+  }
+
+  // Detect region automatically from browser (geolocation or locale fallback)
+  useEffect(() => {
+    function mapCountryCodeToRegion(code) {
+      if (!code) return 'other'
+      const c = code.toUpperCase()
+      if (c === 'US') return 'us'
+      if (c === 'GB' || c === 'UK') return 'uk'
+      if (c === 'IN') return 'india'
+
+      // basic EU country list mapping -> europe
+      const eu = ['AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE']
+      if (eu.includes(c)) return 'europe'
+      return 'other'
+    }
+
+    async function detect() {
+      // try geolocation + reverse geocode (best-effort); fall back to locale
+      try {
+        if (navigator && navigator.geolocation) {
+          const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 3000 }))
+          const { latitude, longitude } = pos.coords || {}
+          if (typeof latitude === 'number' && typeof longitude === 'number') {
+            try {
+              const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(latitude)}&lon=${encodeURIComponent(longitude)}`)
+              if (r.ok) {
+                const j = await r.json()
+                const cc = (j && j.address && j.address.country_code) ? j.address.country_code.toUpperCase() : null
+                if (cc) {
+                  setDetectedRegion(mapCountryCodeToRegion(cc))
+                  return
+                }
+              }
+            } catch (e) {
+              // ignore remote reverse-geocode failure
+            }
+          }
+        }
+      } catch (e) {
+        // ignore geolocation permission or timeout
+      }
+
+      // fallback: use navigator.language or Intl locale
+      try {
+        const locale = (navigator && (navigator.language || (Intl && Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions().locale))) || 'en-US'
+        const parts = locale.split(/[-_]/)
+        const maybeRegion = parts.length > 1 ? parts[1] : null
+        setDetectedRegion(mapCountryCodeToRegion(maybeRegion || 'US'))
+      } catch (e) {
+        setDetectedRegion('us')
+      }
+    }
+
+    detect()
+  }, [])
+
+  async function createCheckout() {
+    setPaying(true)
+    setError(null)
+    try {
+      // persist text across redirect
+      localStorage.setItem('pending_text', text || '')
+      const res = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region: detectedRegion })
+      })
+      if (!res.ok) throw new Error('Payment initiation failed')
+      const { url } = await res.json()
+      if (!url) throw new Error('No checkout URL')
+      window.location.href = url
+    } catch (e) {
+      console.error(e)
+      setError(e.message || 'Payment failed')
+      setPaying(false)
+    }
+  }
+
+  // Apply coupon code by checking server-side secret; if valid, bypass paywall and analyze
+  async function applyCoupon() {
+    setCouponChecking(true)
+    setCouponMessage('Checking coupon…')
+    try {
+      const res = await fetch('/api/verify-coupon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: couponCode || '' })
+      })
+      if (!res.ok) {
+        setCouponMessage('Coupon check failed')
+        setCouponChecking(false)
+        return
+      }
+      const json = await res.json()
+      if (json && json.valid) {
+        setCouponValid(true)
+        setCouponMessage('Coupon applied — analysis unlocked')
+        setShowPayModal(false)
+        // trigger analysis directly (no payment required)
+        await handleAnalyze()
+      } else {
+        setCouponValid(false)
+        setCouponMessage('Invalid coupon')
+      }
+    } catch (e) {
+      console.error('Coupon verify error', e)
+      setCouponMessage('Coupon verification error')
+    } finally {
+      setCouponChecking(false)
+    }
+  }
+
+  async function handleDownloadPDF() {
+    if (!result) return
+    try {
+      // dynamic import to avoid server-side issues
+      const html2canvas = (await import('html2canvas')).default
+      const { jsPDF } = await import('jspdf')
+      const node = document.getElementById('result-card')
+      if (!node) throw new Error('Result element not found')
+
+      const canvas = await html2canvas(node, { scale: 2, useCORS: true })
+      const imgData = canvas.toDataURL('image/png')
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' })
+      const pdfWidth = pdf.internal.pageSize.getWidth()
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width
+      pdf.addImage(imgData, 'PNG', 20, 20, pdfWidth - 40, pdfHeight)
+      pdf.save('analysis.pdf')
+    } catch (e) {
+      console.error('PDF export failed', e)
+      setError('PDF export failed: ' + (e.message || String(e)))
     }
   }
 
@@ -50,11 +240,11 @@ export default function Home() {
 
           <div className="text-center mt-4">
             <button
-              onClick={handleAnalyze}
-              disabled={loading}
+              onClick={startPayment}
+              disabled={loading || paying}
               className="inline-block w-80 md:w-96 bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-lg shadow-lg text-lg disabled:opacity-60"
             >
-              {loading ? 'Analyzing...' : 'Analyze my reaction'}
+              {loading ? 'Analyzing...' : paying ? 'Processing payment...' : 'Analyze my reaction'}
             </button>
             <div className="text-sm text-gray-400 mt-2">Takes about 30 seconds · Private &amp; neutral</div>
           </div>
@@ -62,23 +252,157 @@ export default function Home() {
           {error && <div className="mt-4 text-red-600 text-sm text-center">{error}</div>}
 
           {result && (
-            <div className="mt-6 bg-gray-50 border rounded-lg p-4">
-              <div className="font-semibold">Neutral Summary</div>
-              <div className="mt-2 text-sm text-gray-700">{result.summary || result.text || '—'}</div>
+            <div id="result-card" className="mt-6 bg-gray-50 border rounded-lg p-4 space-y-6">
+              <div>
+                <div className="font-semibold">Neutral Summary</div>
+                <div className="mt-2 text-sm text-gray-700">{result.summary || '—'}</div>
+              </div>
 
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <div className="font-semibold">Overreaction Score</div>
-                  <div className="text-2xl text-blue-700 mt-1">{result.score ?? '—'}</div>
+              <div>
+                <div className="font-semibold">Bias Check</div>
+                <div className="mt-2 space-y-3 text-sm text-gray-700">
+                  {Array.isArray(result.biases) && result.biases.length > 0 ? (
+                    result.biases.map((b, i) => (
+                      <div key={i} className="p-3 bg-white border rounded">
+                        <div className="font-semibold">{b.name || 'Unnamed bias'}</div>
+                        <div className="text-xs text-gray-600 mt-1">{b.description || ''}</div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-gray-500">No obvious biases detected.</div>
+                  )}
                 </div>
-                <div>
-                  <div className="font-semibold">Rational Next Steps</div>
-                  <ol className="list-decimal list-inside text-sm mt-2 text-gray-700">
-                    {(result.steps || []).map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ol>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                <div className="flex items-center space-x-4">
+                  <div className="flex-shrink-0 w-20 h-20 rounded-full bg-blue-100 flex items-center justify-center text-3xl font-bold text-blue-700">
+                    {typeof result.overreaction_score === 'number' ? result.overreaction_score : (result.overreaction_score ? Number(result.overreaction_score) : '—')}
+                  </div>
+                  <div>
+                    <div className="font-semibold">Overreaction Score</div>
+                    <div className="text-sm text-gray-600 mt-1">A numeric assessment from 1 (low) to 10 (high).</div>
+                    <div className="mt-2 w-48 h-3 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        style={{ width: `${Math.min(Math.max((result.overreaction_score || 0), 0), 10) * 10}%` }}
+                        className="h-full bg-gradient-to-r from-green-400 via-yellow-300 to-red-400"
+                      />
+                    </div>
+                  </div>
                 </div>
+
+                <div>
+                  <div className="font-semibold">Proportionality</div>
+                  <div className="mt-2 text-sm text-gray-700">{result.proportionality || '—'}</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="font-semibold">Reality Check</div>
+                <ol className="list-decimal list-inside text-sm mt-2 text-gray-700 space-y-2">
+                  {Array.isArray(result.next_steps) && result.next_steps.length > 0 ? (
+                    result.next_steps.map((s, i) => (
+                      <li key={i}>
+                        <div className="font-medium">{s.step}</div>
+                        <div className="text-xs text-gray-600">{s.explanation}</div>
+                      </li>
+                    ))
+                  ) : (
+                    <li>No steps provided.</li>
+                  )}
+                </ol>
+              </div>
+
+              <div className="text-right">
+                <button
+                  onClick={handleDownloadPDF}
+                  className="inline-block bg-white border px-4 py-2 rounded shadow hover:bg-gray-50 text-sm"
+                >
+                  Download PDF
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Paywall modal */}
+          {showPayModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+              <div className="absolute inset-0 bg-black opacity-40" onClick={() => setShowPayModal(false)} />
+
+              <div className="relative z-10 w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden">
+                <div className="p-6">
+                  <div className="flex items-start justify-between">
+                    <div className="text-center w-full">
+                      <h3 className="text-2xl font-serif text-slate-800">Get a neutral breakdown</h3>
+                      <p className="mt-2 text-sm text-slate-500">A calm, rational perspective — without taking sides.</p>
+                    </div>
+                    <button onClick={() => setShowPayModal(false)} className="ml-4 text-slate-400 hover:text-slate-600">×</button>
+                  </div>
+
+                  <div className="mt-6 p-4 bg-gray-50 border border-gray-100 rounded-md">
+                    <ul className="space-y-3 text-sm text-slate-700">
+                      <li className="flex items-start space-x-3">
+                        <div className="mt-1 text-blue-600">✓</div>
+                        <div>Neutral summary of your situation</div>
+                      </li>
+                      <li className="flex items-start space-x-3">
+                        <div className="mt-1 text-blue-600">✓</div>
+                        <div>Overreaction score (1–10)</div>
+                      </li>
+                      <li className="flex items-start space-x-3">
+                        <div className="mt-1 text-blue-600">✓</div>
+                        <div>Clear next steps</div>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="mt-6 text-center">
+                    <div className="text-xl font-semibold text-slate-800">{priceLabelForRegion(detectedRegion)}</div>
+                    <div className="mt-2 text-sm text-slate-500">No subscription. No recurring charges.</div>
+                  </div>
+
+                  <div className="mt-6">
+                    <button
+                      onClick={createCheckout}
+                      disabled={paying}
+                      className="w-full bg-blue-600 text-white rounded-lg py-3 text-lg shadow-lg hover:bg-blue-700 disabled:opacity-60"
+                    >
+                      {paying ? 'Processing…' : `${priceLabelForRegion(detectedRegion).split(' — ')[0].replace(' — one analysis','')} & see analysis`}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 text-center text-sm text-slate-500">Private by default · No history stored</div>
+
+                  <div className="mt-5 border-t pt-4">
+                    <div className="flex items-center justify-center space-x-2">
+                      <input
+                        value={couponCode}
+                        onChange={(e) => setCouponCode(e.target.value)}
+                        placeholder="Coupon code (optional)"
+                        className="px-3 py-2 border rounded-md text-sm w-56"
+                      />
+                      <button onClick={applyCoupon} disabled={couponChecking || !couponCode} className="px-3 py-2 bg-gray-100 border rounded text-sm">
+                        {couponChecking ? 'Checking…' : 'Apply'}
+                      </button>
+                    </div>
+                    {couponMessage && <div className="mt-3 text-center text-sm text-gray-600">{couponMessage}</div>}
+                    <div className="mt-4 text-xs text-slate-400 text-center">If this wasn't helpful, email us for a refund.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Loading overlay */}
+          {loading && (
+            <div className="fixed inset-0 flex items-center justify-center z-40">
+              <div className="absolute inset-0 bg-white opacity-60" />
+              <div className="z-50 p-6 bg-white rounded-lg shadow-lg flex items-center space-x-3">
+                <svg className="animate-spin h-6 w-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                </svg>
+                <div className="text-sm">Analyzing — one moment please…</div>
               </div>
             </div>
           )}
