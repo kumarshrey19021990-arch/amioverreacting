@@ -12,13 +12,13 @@ export default async function handler(req, res) {
 
   const { region } = req.body || {}
 
-  // Map region to currency & amount (string values for PayPal)
+  // Map region to display currency/amount and PayPal settlement (use USD for PayPal calls to avoid unsupported currencies)
   const pricing = {
-    europe: { currency: 'EUR', amount: '1.99' },
-    uk: { currency: 'GBP', amount: '1.66' },
-    india: { currency: 'INR', amount: '99.00' },
-    us: { currency: 'USD', amount: '1.99' },
-    other: { currency: 'USD', amount: '1.99' },
+    europe: { displayCurrency: '€', displayAmount: '1.99', paypalCurrency: 'USD', paypalAmount: '1.99' },
+    uk: { displayCurrency: '£', displayAmount: '1.66', paypalCurrency: 'USD', paypalAmount: '1.99' },
+    india: { displayCurrency: '₹', displayAmount: '99', paypalCurrency: 'USD', paypalAmount: '1.99' },
+    us: { displayCurrency: '$', displayAmount: '1.99', paypalCurrency: 'USD', paypalAmount: '1.99' },
+    other: { displayCurrency: '$', displayAmount: '1.99', paypalCurrency: 'USD', paypalAmount: '1.99' },
   }
 
   const choice = pricing[(region || 'other').toLowerCase()] || pricing.other
@@ -45,7 +45,7 @@ export default async function handler(req, res) {
     const tokenJson = await tokenResp.json()
     const accessToken = tokenJson.access_token
 
-    // Create order
+    // Create order (use PayPal-supported settlement currency)
     const orderResp = await fetch(`${base}/v2/checkout/orders`, {
       method: 'POST',
       headers: {
@@ -56,7 +56,7 @@ export default async function handler(req, res) {
         intent: 'CAPTURE',
         purchase_units: [
           {
-            amount: { currency_code: choice.currency, value: choice.amount },
+            amount: { currency_code: choice.paypalCurrency, value: choice.paypalAmount },
             description: 'One-time neutral analysis and guidance',
           },
         ],
