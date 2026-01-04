@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "package.json", "use": "@vercel/next" }
+  ],
+  "functions": {
+    "pages/api/analyze.js": {
+      "memory": 1024,
+      "maxDuration": 300
+    },
+    "pages/api/create-checkout-session.js": {
+      "memory": 512,
+      "maxDuration": 60
+    },
+    "pages/api/verify-checkout-session.js": {
+      "memory": 512,
+      "maxDuration": 60
+    },
+    "pages/api/verify-coupon.js": {
+      "memory": 128,
+      "maxDuration": 10
+    }
+  }
+}
