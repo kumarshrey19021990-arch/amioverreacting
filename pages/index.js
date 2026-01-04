@@ -79,7 +79,7 @@ export default function Home() {
     if (!region) return '$1.99 — one analysis'
     if (region === 'europe') return '€1.99 — one analysis'
     if (region === 'uk') return '£1.66 — one analysis'
-    if (region === 'india') return '₹99 — one analysis'
+    if (region === 'india') return '$1.00 — one analysis (≈ ₹90)'
     return '$1.99 — one analysis'
   }
 

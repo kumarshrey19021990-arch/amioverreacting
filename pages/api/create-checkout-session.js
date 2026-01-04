@@ -14,9 +14,10 @@ export default async function handler(req, res) {
 
   // Map region to display currency/amount and PayPal settlement (use USD for PayPal calls to avoid unsupported currencies)
   const pricing = {
-    europe: { displayCurrency: '€', displayAmount: '1.99', paypalCurrency: 'USD', paypalAmount: '1.99' },
-    uk: { displayCurrency: '£', displayAmount: '1.66', paypalCurrency: 'USD', paypalAmount: '1.99' },
-    india: { displayCurrency: '₹', displayAmount: '99', paypalCurrency: 'USD', paypalAmount: '1.99' },
+    europe: { displayCurrency: '€', displayAmount: '1.99', paypalCurrency: 'EUR', paypalAmount: '1.99' },
+    uk: { displayCurrency: '£', displayAmount: '1.66', paypalCurrency: 'GBP', paypalAmount: '1.66' },
+    // PayPal doesn't support INR in many accounts/sandboxes; display ₹99 but charge USD $1.00
+    india: { displayCurrency: '$', displayAmount: '1', paypalCurrency: 'USD', paypalAmount: '1.00' },
     us: { displayCurrency: '$', displayAmount: '1.99', paypalCurrency: 'USD', paypalAmount: '1.99' },
     other: { displayCurrency: '$', displayAmount: '1.99', paypalCurrency: 'USD', paypalAmount: '1.99' },
   }
