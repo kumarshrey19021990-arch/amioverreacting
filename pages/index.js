@@ -33,40 +33,15 @@ export default function Home() {
     }
   }
 
-  // When returning from PayPal Checkout, verify payment and run analysis if paid
+  // Handle Razorpay callback verification (no automatic redirect on load)
+  // Payment verification is triggered manually when payment handler fires
   useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search)
-      const token = params.get('token') || params.get('paypal_order_id') || params.get('session_id')
-      if (!token) return
-
-      // remove token from URL
-      const cleanUrl = window.location.pathname
-      window.history.replaceState({}, '', cleanUrl)
-
-      ;(async () => {
-        try {
-          const v = await fetch(`/api/verify-checkout-session?token=${encodeURIComponent(token)}`)
-          if (!v.ok) throw new Error('Verification failed')
-          const { paid } = await v.json()
-          if (paid) {
-            // restore pending text from localStorage
-            const pending = localStorage.getItem('pending_text') || ''
-            if (pending) setText(pending)
-            // clear pending text after restoring
-            localStorage.removeItem('pending_text')
-            // trigger analysis
-            handleAnalyze()
-          } else {
-            setError('Payment not completed.')
-          }
-        } catch (e) {
-          console.error('Payment verify error', e)
-          setError('Payment verification failed')
-        }
-      })()
-    } catch (e) {
-      /* ignore */
+    // Razorpay script must be loaded for client-side usage
+    if (!window.Razorpay && typeof window !== 'undefined') {
+      const script = document.createElement('script')
+      script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+      script.async = true
+      document.head.appendChild(script)
     }
   }, [])
 
@@ -76,10 +51,11 @@ export default function Home() {
   }
 
   function priceLabelForRegion(region) {
+    console.log({region});
     if (!region) return '$1.99 — one analysis'
     if (region === 'europe') return '€1.99 — one analysis'
     if (region === 'uk') return '£1.66 — one analysis'
-    if (region === 'india') return '$1.00 — one analysis (≈ ₹90)'
+    if (region === 'india') return '₹99 — one analysis'
     return '$1.99 — one analysis'
   }
 
@@ -142,7 +118,7 @@ export default function Home() {
     setPaying(true)
     setError(null)
     try {
-      // persist text across redirect
+      // persist text across payment
       localStorage.setItem('pending_text', text || '')
       const res = await fetch('/api/create-checkout-session', {
         method: 'POST',
@@ -150,9 +126,59 @@ export default function Home() {
         body: JSON.stringify({ region: detectedRegion })
       })
       if (!res.ok) throw new Error('Payment initiation failed')
-      const { url } = await res.json()
-      if (!url) throw new Error('No checkout URL')
-      window.location.href = url
+      const data = await res.json()
+      const { order, publicKey } = data
+      if (!order || !order.id) throw new Error('No order created')
+
+      // Open Razorpay Checkout modal
+      const options = {
+        key: publicKey,
+        order_id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        name: 'Am I Overreacting?',
+        description: 'One-time neutral analysis and guidance',
+        handler: async function (response) {
+          // Payment successful; verify signature server-side
+          try {
+            const verifyRes = await fetch('/api/verify-checkout-session', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              }),
+            })
+            if (!verifyRes.ok) throw new Error('Signature verification failed')
+            const { valid } = await verifyRes.json()
+            if (!valid) throw new Error('Invalid payment signature')
+
+            // restore pending text from localStorage
+            const pending = localStorage.getItem('pending_text') || ''
+            if (pending) setText(pending)
+            localStorage.removeItem('pending_text')
+            setShowPayModal(false)
+            // trigger analysis
+            await handleAnalyze()
+          } catch (e) {
+            console.error('Payment verification error', e)
+            setError('Payment verification failed: ' + e.message)
+          } finally {
+            setPaying(false)
+          }
+        },
+        modal: {
+          ondismiss: function () {
+            setPaying(false)
+            setError('Payment cancelled')
+          },
+        },
+        theme: { color: '#2563EB' },
+      }
+
+      const razorpayWindow = new window.Razorpay(options)
+      razorpayWindow.open()
     } catch (e) {
       console.error(e)
       setError(e.message || 'Payment failed')
@@ -242,7 +268,7 @@ export default function Home() {
             <button
               onClick={startPayment}
               disabled={loading || paying}
-              className="inline-block w-80 md:w-96 bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-lg shadow-lg text-lg disabled:opacity-60"
+              className="w-full md:w-80 lg:w-96 bg-blue-600 hover:bg-blue-700 text-white px-6 py-4 rounded-lg shadow-lg text-lg disabled:opacity-60"
             >
               {loading ? 'Analyzing...' : paying ? 'Processing payment...' : 'Analyze my reaction'}
             </button>
@@ -367,7 +393,7 @@ export default function Home() {
                       disabled={paying}
                       className="w-full bg-blue-600 text-white rounded-lg py-3 text-lg shadow-lg hover:bg-blue-700 disabled:opacity-60"
                     >
-                      {paying ? 'Processing…' : `${priceLabelForRegion(detectedRegion).split(' — ')[0].replace(' — one analysis','')} & see analysis`}
+                      {paying ? 'Processing…' : ('pay '+`${priceLabelForRegion(detectedRegion).split(' — ')[0].replace(' — one analysis','')} & see analysis`)}
                     </button>
                   </div>
 

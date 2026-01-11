@@ -9,13 +9,14 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "next": "14.2.0",
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
+    "@stripe/stripe-js": "^1.37.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^2.5.1",
-    "stripe": "^12.10.0",
-    "@stripe/stripe-js": "^1.37.0"
+    "next": "14.2.0",
+    "razorpay": "^2.9.6",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "stripe": "^12.10.0"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.14",
